@@ -1,10 +1,10 @@
-#
+### pip
 pip install boto3 botocore retrying openpyxl requests pyyaml pandas
 
-###실행
+### 실행
 start /high python sg_firewall_maker.py --type RISCALL --source {Source File Path} --machines {Machine List File Path} --sprint {machine sprint}
 
-###인자 정보
+### 인자 정보
 - type
     - ADS
         - AWS Application Discovery Service 를 사용해서 분석할 경우
@@ -23,8 +23,8 @@ start /high python sg_firewall_maker.py --type RISCALL --source {Source File Pat
 
 
 
-###sg_firewall_maker.yaml
-'''
+### sg_firewall_maker.yaml
+```
         verified_ip_range :
             AS-IS Infra IP Ranges
         aws_vpc_ranges :
@@ -85,10 +85,10 @@ start /high python sg_firewall_maker.py --type RISCALL --source {Source File Pat
                         - 10.10.20.0/24:
                             start: 0
                             end: 65535
-'''
+```
 
 
-###machine_info.csv
+### machine_info.csv
 Machines Information to be Migrated
 
 - Columns
@@ -105,7 +105,7 @@ Machines Information to be Migrated
 
 
 
-###source.csv
+### source.csv
 sg_maker_query.py
 내용을 참조하여 RISC/VPC Flow logs/ADS 디스커버리 로우 데이터 출력.
 
