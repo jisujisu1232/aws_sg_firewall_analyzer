@@ -19,6 +19,8 @@ import math
 import argparse
 from datetime import datetime
 import pandas as pd
+from pprint import pprint
+import CustomTrie
 
 customSeparator = '@#!*%*'
 relatedServersStr = 'Related_Servers'
@@ -29,47 +31,96 @@ verifiedOutbound = 'verified_Outbound'
 notVerifiedInbound = 'not_' + verifiedInbound
 notVerifiedOutbound = 'not_' + verifiedOutbound
 
+
+def create_common_security_rule_by_protocol(rules, protocol):
+    temp = []
+    if protocol == 'All':
+        for r in rules:
+            temp.append(ip_num_ip_binary(r.split('/')))
+        temp.sort()
+    else:
+        for rule in rules:
+            temp_range=rule.keys()
+            if temp_range:
+                k=temp_range[0]
+                temp_dict={}
+                temp_dict['inbound_ip_range']=ip_num_ip_binary(k.split('/'))
+                if rule[k].get('start') and rule[k].get('end'):
+                    temp_dict['start']=rule[k]['start']
+                    temp_dict['end']=rule[k]['end']
+                    temp.append(temp_dict)
+                else:
+                    pass
+        temp.sort(key=lambda e: e.keys()[0])
+    return temp
+
+def create_common_security_rule(security_rules, k):
+    temp = {}
+    temp['server_ip_range'] = ip_num_ip_binary(k.split('/'))
+    if security_rules.get('All'):
+        temp['All'] = create_common_security_rule_by_protocol(security_rules['All'],'All')
+    if security_rules.get('TCP'):
+        temp['TCP'] = create_common_security_rule_by_protocol(security_rules['TCP'],'TCP')
+    if security_rules.get('UDP'):
+        temp['UDP'] = create_common_security_rule_by_protocol(security_rules['UDP'],'UDP')
+    return temp
+
+
 def print_elapsed_time(prev_time):
     now=time.time()
     print(now-prev_time)
     return now
 
+def make_key_value(key,value):
+    tmp = {}
+    tmp['Key']=key
+    tmp['Value']=value
+    return tmp
+
 def firewall_setter(firewall_infos):
-    result = []
     firewall_names = []
-    for info in firewall_infos:
-        tmp_list = []
+    tmp_list = []
+    for info_idx, info in enumerate(firewall_infos):
         firewall_names.append(info.keys()[0])
         tmp = info[info.keys()[0]]
         for f_idx in range(1,len(tmp.keys())+1):
             for ip_range in tmp[f_idx]:
-                tmp_info = []
-                tmp_info.append(ip_num_ip_binary(ip_range.split('/')))
-                tmp_info.append(f_idx)
-                tmp_list.append(tmp_info)
-        result.append(tmp_list)
-    return [firewall_names,result]
+                tmp_list.append(make_key_value(ip_num_ip_binary(ip_range.split('/')), (info_idx,f_idx)))
+
+    return [firewall_names,CustomTrie.Trie(tmp_list,'kv')]
 
 def compare_firewall_and_add(source_ip_binary, target_ip_binary, ads_info_by_hostname, currentColumns, SrcHostname, DestHostname):
-    for f_idx, f_info in enumerate(firewall_infos[1]):
-        s_info = None
-        d_info = None
-        for ip_range_info in f_info:
-            if s_info == None:
-                if source_ip_binary.startswith(ip_range_info[0]):
-                    s_info = ip_range_info[1]
-            if d_info == None:
-                if target_ip_binary.startswith(ip_range_info[0]):
-                    d_info = ip_range_info[1]
-            if s_info != None and d_info != None:
-                if s_info != d_info:
-                    if SrcHostname:
-                        ads_info_by_hostname[SrcHostname]['firewall_infos']['outbound'][f_idx].append(currentColumns)
-                    if DestHostname:
-                        ads_info_by_hostname[DestHostname]['firewall_infos']['inbound'][f_idx].append(currentColumns)
-                    return
-    else:
-        pass
+    s_info = firewall_infos[1].searchAll(source_ip_binary)
+    d_info = firewall_infos[1].searchAll(target_ip_binary)
+    isAdd = False
+    if s_info and d_info:
+        s_dict = {}
+        d_dict = {}
+        while s_info:
+            t=s_info.pop()
+            st = s_dict.get(t[0])
+            if st:
+                st.add(t[1])
+            else:
+                s_dict[t[0]]=set([t[1]])
+        while d_info:
+            t=d_info.pop()
+            dt = d_dict.get(t[0])
+            if dt:
+                dt.add(t[1])
+            else:
+                d_dict[t[0]]=set([t[1]])
+        try:
+            for k in (set(s_dict.keys())&set(d_dict.keys())):
+                d = min(d_dict[k])
+                s = min(s_dict[k])
+                if d!=s:
+                    raise Exception
+        except:
+            if SrcHostname:
+                ads_info_by_hostname[SrcHostname]['firewall_infos']['outbound'][k].append(currentColumns)
+            if DestHostname:
+                ads_info_by_hostname[DestHostname]['firewall_infos']['inbound'][k].append(currentColumns)
 
 def make_related_server(ip, hostname, ip_binary):
     return '{}{}{}{}{}'.format(hostname, customSeparator, ip, customSeparator, ip_binary)
@@ -126,9 +177,9 @@ def grouping_ip_range(ip_ranges):
 
 
 def compare_ip_range(ip32, ip_binary, ip_ranges, customValue):
-    for ip_range in ip_ranges:
-        if ip_binary.startswith(ip_range):
-            return customValue
+
+    if ip_ranges and ip_ranges.search(ip_binary):
+        return customValue
     return ip32
 
 
@@ -195,6 +246,33 @@ def port_treat_as_any(output_list, ref_value_of_treat_as_range):
         return [[ol[0], ol[1],'Any']]
     return output_list
 
+def get_common_sg(ec2_ip_binary):
+    for sr in common_security_rules:
+        if ec2_ip_binary.startswith(sr['server_ip_range']):
+            return sr
+    else:
+        return None
+
+def is_in_common_sg(common_sg, source_binary, protocol, port):
+    if common_sg==None:
+        return False
+    port = int(port)
+    if common_sg.get('All'):
+        for ir in common_sg.get('All'):
+            if source_binary.startswith(ir):
+                return True
+    if int(protocol) == 6:
+        if common_sg.get('TCP'):
+            for ir in common_sg.get('TCP'):
+                if port <= int(ir['end']) and port >= int(ir['start']) and source_binary.startswith(ir['inbound_ip_range']):
+                    return True
+    elif int(protocol) == 17:
+        if common_sg.get('UDP'):
+            for ir in common_sg.get('UDP'):
+                if port <= int(ir['end']) and port >= int(ir['start']) and source_binary.startswith(ir['inbound_ip_range']):
+                    return True
+    return False
+
 
 def create_security_group_by_ads(wb, output_list):
     ws1 = wb.create_sheet()
@@ -219,33 +297,42 @@ def create_security_group_by_ads(wb, output_list):
     make_col_name_cell(ws1, currentNum, 3, 'Destination Port', cellAlignment, cellFill, cellFont)
 
     security_group_output_list = []
-    for current in output_list:
-
-        sourceIps = sorted(list(current[0]), key=lambda e: e[1])
-        sourceIpLen = len(sourceIps)
-
-        startIdx = 0
-        if sourceIpLen >= ref_value_of_treat_as_range:
+    if output_list:
+        common_sg = get_common_sg(output_list[0][-1])
+        for current in output_list:
+            curr_protocol=current[2]
+            curr_port=current[3]
+            sourceIps = sorted(list(current[0]), key=lambda e: e[1])
+            sourceIpLen = len(sourceIps)
             sourceBinaryIps = []
-            for ip in sourceIps:
-                sourceBinaryIps.append(ip[1])
-            sourceIps.reverse()
-            for ip_prefix in ip_ranges_treated_equally:
-                sIdx, eIdx = getStartswithIdx(sourceBinaryIps, ip_prefix[0])
-                sourceBinaryIps = sourceBinaryIps[eIdx+1:]
-                for i in range(sIdx):
-                    security_group_output_list.append(['{}/32'.format(sourceIps.pop()[0]),current[2],current[3]])
-                isGroup = (eIdx - sIdx + 1) >= ref_value_of_treat_as_range
-                if isGroup:
-                    security_group_output_list.append([ip_prefix[1],current[2],current[3]])
-                if eIdx > -1:
-                    for i in range(eIdx - sIdx + 1):
-                        temp = sourceIps.pop()
-                        if not isGroup:
-                            security_group_output_list.append(['{}/32'.format(temp[0]),current[2],current[3]])
-        while sourceIps:
-            ip = sourceIps.pop()
-            security_group_output_list.append(['{}/32'.format(ip[0]),current[2],current[3]])
+            delete_idxs = []
+            for i, ip in enumerate(sourceIps):
+                if is_in_common_sg(common_sg, ip[1], curr_protocol, curr_port):
+                    delete_idxs.append(i)
+                else:
+                    sourceBinaryIps.append(ip[1])
+            while delete_idxs:
+                del sourceIps[delete_idxs.pop()]
+
+            startIdx = 0
+            if sourceIpLen >= ref_value_of_treat_as_range:
+                sourceIps.reverse()
+                for ip_prefix in ip_ranges_treated_equally:
+                    sIdx, eIdx = getStartswithIdx(sourceBinaryIps, ip_prefix[0])
+                    sourceBinaryIps = sourceBinaryIps[eIdx+1:]
+                    for i in range(sIdx):
+                        security_group_output_list.append(['{}/32'.format(sourceIps.pop()[0]),curr_protocol,curr_port])
+                    isGroup = (eIdx - sIdx + 1) >= ref_value_of_treat_as_range
+                    if isGroup:
+                        security_group_output_list.append([ip_prefix[1],curr_protocol,curr_port])
+                    if eIdx > -1:
+                        for i in range(eIdx - sIdx + 1):
+                            temp = sourceIps.pop()
+                            if not isGroup:
+                                security_group_output_list.append(['{}/32'.format(temp[0]),curr_protocol,curr_port])
+            while sourceIps:
+                ip = sourceIps.pop()
+                security_group_output_list.append(['{}/32'.format(ip[0]),curr_protocol,curr_port])
 
     security_group_output_list.sort(key=lambda e: (e[1], e[0]))
     if ref_value_of_treat_as_range:
@@ -454,11 +541,12 @@ def create_ads_sheet(wb, sheet_name, hostname, ads_info_list, type, firewall_app
     make_col_name_cell(ws1, currentNum, 5, 'Dest HOSTNAME' if type else 'Src Hostname', cellAlignment, cellFill, cellFont)
 
     applicationformStartIdx = 5
-    for idx, form_key in enumerate(firewall_application_form[0]):
-        applicationformStartIdx+=1
-        maxlen = max(len(form_key), len(firewall_application_form[1][idx]))
-        ws1.column_dimensions[alpha_upper[applicationformStartIdx-1]].width = math.ceil(float(2.07)*maxlen)
-        make_col_name_cell(ws1, currentNum, applicationformStartIdx, form_key, cellAlignment, cellFill, cellFont)
+    if firewall_application_form:
+        for idx, form_key in enumerate(firewall_application_form[0]):
+            applicationformStartIdx+=1
+            maxlen = max(len(form_key), len(firewall_application_form[1][idx]))
+            ws1.column_dimensions[alpha_upper[applicationformStartIdx-1]].width = math.ceil(float(2.07)*maxlen)
+            make_col_name_cell(ws1, currentNum, applicationformStartIdx, form_key, cellAlignment, cellFill, cellFont)
 
     typeColNum=type+1
     bundleColNum=bundleIdx+1
@@ -519,9 +607,10 @@ def create_ads_sheet(wb, sheet_name, hostname, ads_info_list, type, firewall_app
             make_merge_cell(ws1, bundleNum, 4, mergeNum, 4, str(current[3]), cellAlignment)
 
         applicationformStartIdx = 5
-        for form_value in firewall_application_form[1]:
-            applicationformStartIdx+=1
-            make_merge_cell(ws1, bundleNum, applicationformStartIdx, mergeNum, applicationformStartIdx, form_value, cellAlignment)
+        if firewall_application_form:
+            for form_value in firewall_application_form[1]:
+                applicationformStartIdx+=1
+                make_merge_cell(ws1, bundleNum, applicationformStartIdx, mergeNum, applicationformStartIdx, form_value, cellAlignment)
         currentNum += ipsLen
 
 
@@ -591,7 +680,6 @@ except_ports = None
 except_ip_ranges = None
 aws_vpc_ranges = None
 validate_form_values=None
-isVF = False
 firewall_infos = None
 # def main(file_name):
 def main(arguments):
@@ -601,24 +689,18 @@ def main(arguments):
     global except_ip_ranges
     global aws_vpc_ranges
     global validate_form_values
-    global isVF
     global firewall_infos
+    global common_security_rules
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--type', required=True, choices=['ADS','RISC','RISCALL','VPCFLOW'], help='ADS RISC VPCFLOW')
+    parser.add_argument('--type', required=False, choices=['RISC', 'RISCALL','Other'], help='RISC, RISCALL, Other', default="Other")
     parser.add_argument('--source', required=False, help='Full path of connection source .csv file.', default=os.path.join(sys.path[0], 'source.csv'))
     parser.add_argument('--machines', required=False, help='Full path of Machine info .csv file.', default=os.path.join(sys.path[0], 'machine_list.csv'))
-    parser.add_argument('--sprint', required=False, help='Migration Sprint')
+    parser.add_argument('--sprint', required=True, help='Migration Sprint')
     args = parser.parse_args(arguments)
 
     isRISC = (args.type[:4]=='RISC')
-    isVF = (args.type=='VPCFLOW')
-    if isVF:
-        args.sprint = ''
-    elif not args.sprint:
-        print('[Error] --sprint is required.')
-        return
     sprint = str(args.sprint)
 
     #fileName = os.path.join(sys.path[0], 'machine_list.csv')
@@ -632,18 +714,28 @@ def main(arguments):
     firewall_application_form = check_firewall_application_form(config['firewall_application_form'] if config.get('firewall_application_form') else [])
     if firewall_application_form==False:
         return
-
+    except_ports = config['exclude_ports'] if config.get('exclude_ports') else {}
+    except_ip_ranges = config['exclude_ip_ranges'] if config.get('exclude_ip_ranges') else []
+    except_ip_range_binaries = []
+    for ir in except_ip_ranges:
+        ir = ir.split('/')
+        if len(ir)==1:
+            ir.append('32')
+        except_ip_range_binaries.append(ip_num_ip_binary(ir))
+    except_ip_range_trie = CustomTrie.Trie(except_ip_range_binaries)
     firewall_infos = firewall_setter(config['firewall_infos']) if config.get('firewall_infos') else []
     isInFirewall = True if firewall_infos else False
     aws_vpc_ranges_temp = config['aws_vpc_ranges'] if config.get('aws_vpc_ranges') else []
     aws_vpc_ranges= []
     for r in aws_vpc_ranges_temp:
         aws_vpc_ranges.append(ip_num_ip_binary(r.split('/')))
-    verified_ip_range = []
+    verified_ip_range = None
     numberic_verified_ip_range = config.get('verified_ip_range')
     if numberic_verified_ip_range:
+        tmp_range=[]
         for ip_range in numberic_verified_ip_range:
-            verified_ip_range.append(ip_num_ip_binary(ip_range.split('/')))
+            tmp_range.append(ip_num_ip_binary(ip_range.split('/')))
+        verified_ip_range=CustomTrie.Trie(tmp_range)
 
     security_group_config = config.get('security_group')
     ref_value_of_treat_as_range=float('inf')
@@ -657,6 +749,12 @@ def main(arguments):
     else:
         security_group_config['ref_value_of_treat_as_range'] = float('inf')
 
+
+    common_security_rules = []
+    if security_group_config.get('common_security_rules'):
+        for k in security_group_config.get('common_security_rules').keys():
+            common_security_rules.append(create_common_security_rule(security_group_config.get('common_security_rules')[k],k))
+
     prev_time=time.time()
     start_time=prev_time
     response = requests.get('https://ip-ranges.amazonaws.com/ip-ranges.json')
@@ -664,7 +762,7 @@ def main(arguments):
     aws_ip_ranges = []
     for ip_range in ip_ranges:
         aws_ip_ranges.append(ip_num_ip_binary(ip_range['ip_prefix'].split('/')))
-    final_aws_ip_ranges = grouping_ip_range(aws_ip_ranges)
+    final_aws_ip_ranges = CustomTrie.Trie(grouping_ip_range(aws_ip_ranges))
 
     resultFolder = os.path.join(sys.path[0], 'results')
     if not os.path.exists(resultFolder):
@@ -687,12 +785,11 @@ def main(arguments):
                 row[i] = v.strip()
         hostname = row[0].upper()
         asis_tobe_ip_dict[row[1]]=row[2]
-        if isVF or isRISC:
-            if row[1]:
-                all_ip_list[row[1]]=hostname
-            if row[2]:
-                all_ip_list[row[2]]=hostname
-        if str(row[4]) == sprint or isVF:
+        if row[1]:
+            all_ip_list[row[1]]=hostname
+        if row[2]:
+            all_ip_list[row[2]]=hostname
+        if str(row[4]) == sprint:
             hostname_list[hostname]=row
             ads_info_by_hostname[hostname]={}
             ads_info_by_hostname[hostname][inboundStr]=[]
@@ -711,14 +808,6 @@ def main(arguments):
                 for i in range(len(firewall_infos[0])):
                     ads_info_by_hostname[hostname]['firewall_infos']['inbound'].append([])
                     ads_info_by_hostname[hostname]['firewall_infos']['outbound'].append([])
-    except_ports = config['exclude_ports'] if config.get('exclude_ports') else {}
-    except_ip_ranges = config['exclude_ip_ranges'] if config.get('exclude_ip_ranges') else []
-    except_ip_range_binaries = []
-    for ir in except_ip_ranges:
-        ir = ir.split('/')
-        if len(ir)==1:
-            ir.append('32')
-        except_ip_range_binaries.append(ip_num_ip_binary(ir))
 
     prev_time=print_elapsed_time(prev_time)
     print("************************")
@@ -770,7 +859,7 @@ def main(arguments):
                 if asis_tobe_ip_dict.get(currentColumns[1]):
                     currentColumns[1] = asis_tobe_ip_dict[currentColumns[1]]
                 currentColumns[5] = destination_hostname
-        elif isVF:
+        else:
             currentColumns = currentColumns.tolist()
             destination_hostname = all_ip_list.get(currentColumns[1])
             source_hostname = all_ip_list.get(currentColumns[0])
@@ -792,9 +881,9 @@ def main(arguments):
                     continue
         source_ip_binary = ip_num_ip_binary([source_ip,'32'])
         target_ip_binary = ip_num_ip_binary([target_ip,'32'])
-        for ir in except_ip_range_binaries:
-            if source_ip_binary.startswith(ir) or target_ip_binary.startswith(ir):
-                break
+
+        if except_ip_range_trie.search(source_ip_binary) or except_ip_range_trie.search(target_ip_binary):
+            pass
         else:
             isInSrcHostname = source_hostname and source_hostname in hostname_list.keys()
             isInDestHostname = destination_hostname and destination_hostname in hostname_list.keys()
