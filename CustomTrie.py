@@ -4,6 +4,7 @@ class TrieNode:
         self.childNodes=[]
         self.terminal=False
         self.values=[]
+        
     def subNode(self,char):
         if self.childNodes:
             for cN in self.childNodes:
@@ -12,11 +13,12 @@ class TrieNode:
         return None
 
 class Trie:
-    def __init__(self, input_list, ctype='default'):
+    def __init__(self, input_list, ctype=None):
         self.root=TrieNode(0)
         self.type=ctype
         self.input_list=input_list
         self.insertAll()
+
 
     def search(self, str):
         current = self.root
@@ -29,6 +31,21 @@ class Trie:
             current = next
         return current.terminal
 
+
+    def search_value(self, str):
+        current = self.root
+        for s in str:
+            if current.terminal:
+                return current.values
+            next = current.subNode(s)
+            if next == None:
+                return None
+            current = next
+        if current.terminal:
+            return current.values
+        return None
+
+
     def searchAll(self, str):
         return_arr = []
         current = self.root
@@ -40,6 +57,7 @@ class Trie:
                 break
             current = next
         return return_arr
+
 
     def insert(self, key, value):
         # if self.search(key):
@@ -56,9 +74,10 @@ class Trie:
             current.values.append(value)
         return current
 
+
     def insertAll(self):
         for d in self.input_list:
-            if self.type=='kv':
+            if self.type != None:
                 self.insert(d['Key'], d['Value'])
             else:
                 self.insert(d, None)

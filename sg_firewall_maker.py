@@ -3,14 +3,14 @@
 #Athor : Jisu Kim
 '''
 python 2.7
-pip install boto3 botocore retrying openpyxl requests pyyaml pandas
+pip install boto3 botocore retrying xlsxwriter requests pyyaml pandas
 '''
 from __future__ import print_function
 import copy
 import string
 import os
 import sys
-import openpyxl
+import xlsxwriter
 import requests
 import json
 import time
@@ -21,6 +21,7 @@ from datetime import datetime
 import pandas as pd
 from pprint import pprint
 import CustomTrie
+from ExcelWriter import ExcelWriter
 
 customSeparator = '@#!*%*'
 relatedServersStr = 'Related_Servers'
@@ -30,40 +31,6 @@ verifiedInbound = 'verified_Inbound'
 verifiedOutbound = 'verified_Outbound'
 notVerifiedInbound = 'not_' + verifiedInbound
 notVerifiedOutbound = 'not_' + verifiedOutbound
-
-
-def create_common_security_rule_by_protocol(rules, protocol):
-    temp = []
-    if protocol == 'All':
-        for r in rules:
-            temp.append(ip_num_ip_binary(r.split('/')))
-        temp.sort()
-    else:
-        for rule in rules:
-            temp_range=rule.keys()
-            if temp_range:
-                k=temp_range[0]
-                temp_dict={}
-                temp_dict['inbound_ip_range']=ip_num_ip_binary(k.split('/'))
-                if rule[k].get('start') and rule[k].get('end'):
-                    temp_dict['start']=rule[k]['start']
-                    temp_dict['end']=rule[k]['end']
-                    temp.append(temp_dict)
-                else:
-                    pass
-        temp.sort(key=lambda e: e.keys()[0])
-    return temp
-
-def create_common_security_rule(security_rules, k):
-    temp = {}
-    temp['server_ip_range'] = ip_num_ip_binary(k.split('/'))
-    if security_rules.get('All'):
-        temp['All'] = create_common_security_rule_by_protocol(security_rules['All'],'All')
-    if security_rules.get('TCP'):
-        temp['TCP'] = create_common_security_rule_by_protocol(security_rules['TCP'],'TCP')
-    if security_rules.get('UDP'):
-        temp['UDP'] = create_common_security_rule_by_protocol(security_rules['UDP'],'UDP')
-    return temp
 
 
 def print_elapsed_time(prev_time):
@@ -185,7 +152,7 @@ def compare_ip_range(ip32, ip_binary, ip_ranges, customValue):
 
 def check_firewall_application_form_value(form_value):
     # - Allow/Deny : Allow
-    # - Expiration_Date : "#add_date# 1Y"
+    # - Expiration_Date : "#add_year# 1"
     # - Requester : "#service_admin#"
     # - Remarks : "#hostname# by ADS"
     if form_value:
@@ -200,7 +167,7 @@ def check_firewall_application_form_value(form_value):
                             addYear = int(form_value[1])
                         nowDatetime = datetime.now()
                         nowDatetime = nowDatetime.replace(year=nowDatetime.year+addYear)
-                        return [datetime.now().strftime("%Y-%m-%d")]
+                        return [nowDatetime.strftime("%Y-%m-%d")]
                 except:
                     print("firewall_application_form (config yaml) Dynamic values only support {}.".format(','.join(validate_form_values)))
                     return False
@@ -246,59 +213,85 @@ def port_treat_as_any(output_list, ref_value_of_treat_as_range):
         return [[ol[0], ol[1],'Any']]
     return output_list
 
-def get_common_sg(ec2_ip_binary):
-    for sr in common_security_rules:
-        if ec2_ip_binary.startswith(sr['server_ip_range']):
-            return sr
-    else:
-        return None
 
-def is_in_common_sg(common_sg, source_binary, protocol, port):
-    if common_sg==None:
+def create_common_security_rules(common_security_rules):
+    temp_kv = []
+    if common_security_rules:
+        for k in common_security_rules.keys():
+            temp_kv.append(make_key_value(ip_num_ip_binary(k.split('/')), CustomTrie.Trie(create_common_security_rule(security_group_config.get('common_security_rules')[k]),'kv')))
+    return CustomTrie.Trie(temp_kv, 'kv')
+
+
+def create_common_security_rule(security_rules):
+    temp = []
+    for k in security_rules.keys():
+        temp+=create_common_security_rule_by_protocol(security_rules[k], k)
+
+    return temp
+
+
+def make_common_sg_protocol_dict(start, end, protocol):
+    temp_dict={}
+    temp_dict['start']=start
+    temp_dict['end']=end
+    temp_dict['protocol']=protocol
+    return temp_dict
+
+
+def create_common_security_rule_by_protocol(rules, protocol):
+    temp = []
+    if protocol == 'All':
+        for r in rules:
+            ib = ip_num_ip_binary(r.split('/'))
+            temp.append(make_key_value(ib, make_common_sg_protocol_dict(0, 65536,'UDP')))
+            temp.append(make_key_value(ib, make_common_sg_protocol_dict(0, 65536,'TCP')))
+    else:
+        for rule in rules:
+            temp_range=rule.keys()
+            if rule:
+                k=temp_range[0]
+                rule_info = rule[k]
+                temp_dict={}
+                if rule_info.get('start') and rule_info.get('end'):
+                    temp_dict['start']=rule_info['start']
+                    temp_dict['end']=rule_info['end']
+                    temp_dict['protocol']=protocol
+                    temp.append(make_key_value(ip_num_ip_binary(k.split('/')), temp_dict))
+                else:
+                    pass
+    return temp
+
+def get_common_sg_list(ec2_ip_binary):
+    return common_security_rules.search_value(ec2_ip_binary)
+
+
+def is_in_common_sg(common_sg_list, source_binary, protocol, port):
+    if not common_sg_list:
         return False
+
     port = int(port)
-    if common_sg.get('All'):
-        for ir in common_sg.get('All'):
-            if source_binary.startswith(ir):
+    if protocol == 6:
+        protocol = 'TCP'
+    if protocol == 17:
+        protocol = 'UDP'
+
+    for c_sg in common_sg_list:
+        for v in c_sg.searchAll(source_binary):
+            if v['protocol']==protocol and port <= int(v['end']) and port >= int(v['start']):
                 return True
-    if int(protocol) == 6:
-        if common_sg.get('TCP'):
-            for ir in common_sg.get('TCP'):
-                if port <= int(ir['end']) and port >= int(ir['start']) and source_binary.startswith(ir['inbound_ip_range']):
-                    return True
-    elif int(protocol) == 17:
-        if common_sg.get('UDP'):
-            for ir in common_sg.get('UDP'):
-                if port <= int(ir['end']) and port >= int(ir['start']) and source_binary.startswith(ir['inbound_ip_range']):
-                    return True
     return False
 
 
 def create_security_group_by_ads(wb, output_list):
-    ws1 = wb.create_sheet()
+
     global security_group_config
     ip_ranges_treated_equally=security_group_config['ip_ranges_treated_equally']
     ref_value_of_treat_as_range=security_group_config['ref_value_of_treat_as_range']
 
-    ws1.title = 'Security Group'
-    ws1.column_dimensions['A'].width = 17
-    ws1.column_dimensions['B'].width = 17
-    ws1.column_dimensions['C'].width = 14
-    ws1.column_dimensions['D'].width = 17
-    currentNum = 1
-    cellFill = openpyxl.styles.PatternFill(start_color='c0c0c0',
-                   end_color='c0c0c0',
-                   fill_type='solid')
-    cellFont = openpyxl.styles.Font(bold=True)
-    cellAlignment = openpyxl.styles.Alignment(horizontal='center', vertical='center')
-
-    make_col_name_cell(ws1, currentNum, 1, 'Source IP', cellAlignment, cellFill, cellFont)
-    make_col_name_cell(ws1, currentNum, 2, 'Protocol', cellAlignment, cellFill, cellFont)
-    make_col_name_cell(ws1, currentNum, 3, 'Destination Port', cellAlignment, cellFill, cellFont)
-
     security_group_output_list = []
     if output_list:
-        common_sg = get_common_sg(output_list[0][-1])
+        common_sg_list = get_common_sg_list(output_list[0][-1])
+
         for current in output_list:
             curr_protocol=current[2]
             curr_port=current[3]
@@ -307,7 +300,7 @@ def create_security_group_by_ads(wb, output_list):
             sourceBinaryIps = []
             delete_idxs = []
             for i, ip in enumerate(sourceIps):
-                if is_in_common_sg(common_sg, ip[1], curr_protocol, curr_port):
+                if is_in_common_sg(common_sg_list, ip[1], curr_protocol, curr_port):
                     delete_idxs.append(i)
                 else:
                     sourceBinaryIps.append(ip[1])
@@ -354,12 +347,8 @@ def create_security_group_by_ads(wb, output_list):
 
         security_group_output_list = port_check_output_list
     security_group_output_list.sort(key=lambda e:(e[1],0 if e[2]=='Any' else int(e[2]),e[0]))
-    for output in security_group_output_list:
-        currentNum+=1
-        ip, protocol, port = output
-        make_cell(ws1, currentNum, 1, ip).alignment= cellAlignment
-        make_cell(ws1, currentNum, 2, 'TCP' if protocol==6 else ('UDP' if protocol==17 else protocol)).alignment= cellAlignment
-        make_cell(ws1, currentNum, 3, port).alignment= cellAlignment
+
+    wb.create_security_group_sheet(security_group_output_list)
 
 
 def getStartswithIdx(binary_list, prefix):
@@ -390,70 +379,6 @@ sheet_infos.append([verifiedInbound, 'List of servers in the verified IP ranges 
 sheet_infos.append([verifiedOutbound, 'List of servers in the verified IP ranges to which this machine sends requests.'])
 sheet_infos.append(['not_{}'.format(verifiedInbound), 'List of servers not in the verified IP ranges that send requests to this machine.'])
 sheet_infos.append(['not_{}'.format(verifiedOutbound), 'List of servers not in the verified IP ranges to which this machine sends requests.'])
-def create_sheet_info(wb):
-    global sheet_infos
-    global numberic_verified_ip_range
-    global except_ports
-    global except_ip_ranges
-    ws_info = wb.active
-    ws_info.title = 'Sheet Info'
-    ws_info.column_dimensions['C'].width = 23
-    ws_info.column_dimensions['D'].width = 120
-    ws_info.merge_cells(start_row=2, start_column=3, end_row=4, end_column=4)
-    ws_info.cell(row=2, column=3, value='Information of the Sheets')
-    ws_info.cell(row=2, column=3).alignment = openpyxl.styles.Alignment(horizontal='center', vertical='center')
-    ws_info.cell(row=2, column=3).font = openpyxl.styles.Font(size=30, bold=True)
-    currentCellIdx = 5
-    for idx, sheet_info in enumerate(sheet_infos):
-        ws_info.cell(row=currentCellIdx, column=3, value='{}. {}'.format(idx+1,sheet_info[0]))
-        ws_info.cell(row=currentCellIdx, column=3).alignment = openpyxl.styles.Alignment(horizontal='left', vertical='center')
-        ws_info.cell(row=currentCellIdx+1, column=4, value=sheet_info[1])
-        ws_info.cell(row=currentCellIdx+1, column=4).alignment = openpyxl.styles.Alignment(horizontal='left', vertical='center')
-        currentCellIdx+=2
-    currentCellIdx+=2
-    ws_info.cell(row=currentCellIdx, column=4, value='Verified IP Ranges')
-    ws_info.cell(row=currentCellIdx, column=4).alignment = openpyxl.styles.Alignment(horizontal='left', vertical='center')
-    ws_info.cell(row=currentCellIdx, column=4).font = openpyxl.styles.Font(size=15, bold=True)
-    currentCellIdx+=1
-    if numberic_verified_ip_range:
-        for r in numberic_verified_ip_range:
-            ws_info.cell(row=currentCellIdx, column=4, value=r)
-            ws_info.cell(row=currentCellIdx, column=4).alignment = openpyxl.styles.Alignment(horizontal='left', vertical='center')
-            currentCellIdx+=1
-    else:
-        ws_info.cell(row=currentCellIdx, column=4, value='None')
-        ws_info.cell(row=currentCellIdx, column=4).alignment = openpyxl.styles.Alignment(horizontal='left', vertical='center')
-        currentCellIdx+=1
-    # except_ports
-    currentCellIdx+=1
-    ws_info.cell(row=currentCellIdx, column=4, value='Exclude Ports')
-    ws_info.cell(row=currentCellIdx, column=4).alignment = openpyxl.styles.Alignment(horizontal='left', vertical='center')
-    ws_info.cell(row=currentCellIdx, column=4).font = openpyxl.styles.Font(size=15, bold=True)
-    currentCellIdx+=1
-    if except_ports:
-        for r in except_ports.keys():
-            ws_info.cell(row=currentCellIdx, column=4, value=r + ' : ' + ', '.join(str(x) for x in (sorted(except_ports[r]) if except_ports.get(r) else [])))
-            ws_info.cell(row=currentCellIdx, column=4).alignment = openpyxl.styles.Alignment(horizontal='left', vertical='center')
-            currentCellIdx+=1
-    else:
-        ws_info.cell(row=currentCellIdx, column=4, value='None')
-        ws_info.cell(row=currentCellIdx, column=4).alignment = openpyxl.styles.Alignment(horizontal='left', vertical='center')
-        currentCellIdx+=1
-    # except_ip_ranges
-    currentCellIdx+=1
-    ws_info.cell(row=currentCellIdx, column=4, value='Exclude IP Ranges')
-    ws_info.cell(row=currentCellIdx, column=4).alignment = openpyxl.styles.Alignment(horizontal='left', vertical='center')
-    ws_info.cell(row=currentCellIdx, column=4).font = openpyxl.styles.Font(size=15, bold=True)
-    currentCellIdx+=1
-    if except_ip_ranges:
-        for r in except_ip_ranges:
-            ws_info.cell(row=currentCellIdx, column=4, value=r)
-            ws_info.cell(row=currentCellIdx, column=4).alignment = openpyxl.styles.Alignment(horizontal='left', vertical='center')
-            currentCellIdx+=1
-    else:
-        ws_info.cell(row=currentCellIdx, column=4, value='None')
-        ws_info.cell(row=currentCellIdx, column=4).alignment = openpyxl.styles.Alignment(horizontal='left', vertical='center')
-
 
 
 def is_In_vpc_range(ip_binary):
@@ -463,29 +388,10 @@ def is_In_vpc_range(ip_binary):
             return True
     return False
 
-def make_col_name_cell(sheet, cell_row, cell_col, value, alignment, fill, font):
-    cell=make_cell(sheet, cell_row, cell_col, value)
-    cell.alignment = alignment
-    cell.font = font
-    cell.fill = fill
-    return cell
-
-def make_merge_cell(sheet, start_row, start_column, end_row, end_column, value, alignment):
-    sheet.merge_cells(start_row=start_row, start_column=start_column, end_row=end_row, end_column=end_column)
-    cell = make_cell(sheet, start_row, start_column, value)
-    cell.alignment = alignment
-    return cell
-
-
-def make_cell(sheet, cell_row, cell_col, value):
-    cell = sheet.cell(row=cell_row, column=cell_col)
-    cell.value=value
-    return cell
 
 # type
 #    0 : inbound
 #    1 : outbound
-alpha_upper = string.ascii_uppercase
 def create_ads_sheet(wb, sheet_name, hostname, ads_info_list, type, firewall_application_form):
     print('\t{} Size : {}'.format(sheet_name, len(ads_info_list)))
     output_list = []
@@ -518,161 +424,12 @@ def create_ads_sheet(wb, sheet_name, hostname, ads_info_list, type, firewall_app
 
     if realType==0:
         create_security_group_by_ads(wb, output_list)
-    ws1 = wb.create_sheet()
 
-    ws1.title = sheet_name
-    ws1.column_dimensions['A'].width = 17
-    ws1.column_dimensions['B'].width = 17
-    ws1.column_dimensions['C'].width = 14
-    ws1.column_dimensions['D'].width = 14
-    ws1.column_dimensions['E'].width = 17
-    currentNum = 1
+    wb.create_dependency_sheet(sheet_name, hostname, output_list, type, bundleIdx, firewall_application_form)
 
-    cellFill = openpyxl.styles.PatternFill(start_color='c0c0c0',
-                   end_color='c0c0c0',
-                   fill_type='solid')
-    cellAlignment = openpyxl.styles.Alignment(horizontal='center', vertical='center')
-    cellFont = openpyxl.styles.Font(bold=True)
-
-    make_col_name_cell(ws1, currentNum, 1, 'Source IP', cellAlignment, cellFill, cellFont)
-    make_col_name_cell(ws1, currentNum, 2, 'Destination IP', cellAlignment, cellFill, cellFont)
-    make_col_name_cell(ws1, currentNum, 3, 'Protocol', cellAlignment, cellFill, cellFont)
-    make_col_name_cell(ws1, currentNum, 4, 'Destination Port', cellAlignment, cellFill, cellFont)
-    make_col_name_cell(ws1, currentNum, 5, 'Dest HOSTNAME' if type else 'Src Hostname', cellAlignment, cellFill, cellFont)
-
-    applicationformStartIdx = 5
-    if firewall_application_form:
-        for idx, form_key in enumerate(firewall_application_form[0]):
-            applicationformStartIdx+=1
-            maxlen = max(len(form_key), len(firewall_application_form[1][idx]))
-            ws1.column_dimensions[alpha_upper[applicationformStartIdx-1]].width = math.ceil(float(2.07)*maxlen)
-            make_col_name_cell(ws1, currentNum, applicationformStartIdx, form_key, cellAlignment, cellFill, cellFont)
-
-    typeColNum=type+1
-    bundleColNum=bundleIdx+1
-    prevBundleCurrentIP=''
-    prev_is_in_vpc=False
+    return
 
 
-    lineNum=0
-    output_list.reverse()
-    while output_list:
-        lineNum+=1
-        current = output_list.pop()
-        '''
-        for lineNum, current in enumerate(output_list, start=1):
-        '''
-        tempips = list(current[type])
-        '''
-        if current[bundleIdx]==prevBundleCurrentIP:
-            is_in_vpc=prev_is_in_vpc
-        else:
-            is_in_vpc = is_In_vpc_range(current[-2+bundleIdx])
-            prevBundleCurrentIP=current[bundleIdx]
-            prev_is_in_vpc=is_in_vpc
-        '''
-        tempipInfos = []
-        print('\t\t{}'.format(lineNum), end='\r')
-        for ip in tempips:
-            '''
-            if '.' in ip[0]:
-                ip_binary = ip[1]
-                if is_in_vpc and not isVF:
-                    if realType > 1 or not is_In_vpc_range(ip_binary):
-                        tempipInfos.append(ip)
-                else:
-                    tempipInfos.append(ip)
-            else:
-                tempipInfos.append(ip)
-        if not tempipInfos:
-            continue
-            '''
-            tempipInfos.append(ip)
-
-        tempipInfos.sort(key=lambda e:e[1])
-        ipsLen = len(tempipInfos)
-        bundleNum=currentNum+1
-        for i, ip_info in enumerate(tempipInfos):
-            make_cell(ws1, bundleNum+i, typeColNum, ip_info[0])
-            make_cell(ws1, bundleNum+i, 5, ip_info[2])
-        mergeNum=currentNum+ipsLen
-
-        if bundleNum==mergeNum:
-            make_cell(ws1, bundleNum, bundleColNum, current[bundleIdx]).alignment=cellAlignment
-            make_cell(ws1, bundleNum, 3, 'TCP' if current[2]==6 else ('UDP' if current[2]==17 else protocol)).alignment=cellAlignment
-            make_cell(ws1, bundleNum, 4, str(current[3])).alignment=cellAlignment
-        else:
-            make_merge_cell(ws1, bundleNum, bundleColNum, mergeNum, bundleColNum, current[bundleIdx], cellAlignment)
-            make_merge_cell(ws1, bundleNum, 3, mergeNum, 3, 'TCP' if current[2]==6 else ('UDP' if current[2]==17 else protocol), cellAlignment)
-            make_merge_cell(ws1, bundleNum, 4, mergeNum, 4, str(current[3]), cellAlignment)
-
-        applicationformStartIdx = 5
-        if firewall_application_form:
-            for form_value in firewall_application_form[1]:
-                applicationformStartIdx+=1
-                make_merge_cell(ws1, bundleNum, applicationformStartIdx, mergeNum, applicationformStartIdx, form_value, cellAlignment)
-        currentNum += ipsLen
-
-
-def create_related_servers_sheet(wb, sheet_name, related_servers_list):
-    ws2=wb.create_sheet()
-    ws2.title = sheet_name
-    ws2.column_dimensions['A'].width = 17
-    ws2.column_dimensions['B'].width = 17
-    ws2.column_dimensions['C'].width = 150
-    currentNum = 1
-    cellFill = openpyxl.styles.PatternFill(start_color='c0c0c0',
-                   end_color='c0c0c0',
-                   fill_type='solid')
-    cellAlignmentCenter = openpyxl.styles.Alignment(horizontal='center', vertical='center')
-    cellAlignmentWrap = openpyxl.styles.Alignment(horizontal='left', vertical='center', wrap_text=True)
-    cellFont = openpyxl.styles.Font(bold=True)
-    make_col_name_cell(ws2, currentNum, 1, 'Hostname', cellAlignmentCenter, cellFill, cellFont)
-    make_col_name_cell(ws2, currentNum, 2, 'IP', cellAlignmentCenter, cellFill, cellFont)
-    make_col_name_cell(ws2, currentNum, 3, 'Ports', cellAlignmentCenter, cellFill, cellFont)
-    for related_server in sorted(list(related_servers_list.keys()), key=lambda e: (e.split(customSeparator)[0] if e.split(customSeparator)[0] else 'ZZZ',  e.split(customSeparator)[2])):
-        hostname, ip, ip_range = related_server.split(customSeparator)
-        currentNum+=1
-        make_cell(ws2, currentNum, 1, hostname).alignment = cellAlignmentCenter
-        make_cell(ws2, currentNum, 2, ip).alignment = cellAlignmentCenter
-        portsStr = ''
-        lastProtocolIdx = len(related_servers_list[related_server].keys())-1
-        for idx, protocol in enumerate(related_servers_list[related_server].keys()):
-            if protocol == 6:
-                portsStr+='[TCP]\n'
-            elif protocol == 17:
-                portsStr+='[UDP]\n'
-            else:
-                portsStr+=str(protocol)+'\n'
-            portsStr+=', '.join(str(x) for x in sorted(list(related_servers_list[related_server][protocol])))
-            if lastProtocolIdx > idx:
-                portsStr += '\n'
-        make_cell(ws2, currentNum, 3, portsStr).alignment = cellAlignmentWrap
-        ws2.row_dimensions[currentNum].height = 35*(lastProtocolIdx+1)
-
-
-risc_widths=[13, 13, 22, 8, 17, 17, 15, 19, 34, 26, 15, 19, 34, 26]
-def create_risc_sheet(wb, risc_list):
-    ws2=wb.create_sheet()
-    ws2.title = 'RISC'
-    for i, w in enumerate(risc_widths):
-        ws2.column_dimensions[alpha_upper[i]].width = w
-
-    cellFill = openpyxl.styles.PatternFill(start_color='c0c0c0',
-                   end_color='c0c0c0',
-                   fill_type='solid')
-    cellAlignmentCenter = openpyxl.styles.Alignment(horizontal='center', vertical='center')
-    cellFont = openpyxl.styles.Font(bold=True)
-
-    column_names = ["Source IP", "Dest IP", "Protocol Name", "Dest Port", "Source Hostname", "Dest Hostname","sour-ce_process","source_application","source_application_context","source_application_instance","dest_process","dest_application","dest_application_context","dest_application_instance", "netstat_count"]
-    for colNum, cn in enumerate(column_names, start=1):
-        make_col_name_cell(ws2, 1, colNum, cn, cellAlignmentCenter, cellFill, cellFont)
-
-    currentNum = 2
-    for risc in risc_list:
-        for i, cl in enumerate(risc, start=1):
-            make_cell(ws2, currentNum, i, cl).alignment = cellAlignmentCenter
-        currentNum+=1
 
 security_group_config = None
 numberic_verified_ip_range = None
@@ -749,12 +506,14 @@ def main(arguments):
     else:
         security_group_config['ref_value_of_treat_as_range'] = float('inf')
 
-
-    common_security_rules = []
+    #wltn
+    common_security_rules = None
     if security_group_config.get('common_security_rules'):
+        common_security_rules=create_common_security_rules(security_group_config.get('common_security_rules'))
+        '''
         for k in security_group_config.get('common_security_rules').keys():
             common_security_rules.append(create_common_security_rule(security_group_config.get('common_security_rules')[k],k))
-
+        '''
     prev_time=time.time()
     start_time=prev_time
     response = requests.get('https://ip-ranges.amazonaws.com/ip-ranges.json')
@@ -841,6 +600,7 @@ def main(arguments):
             currentColumns = list(line[:6])
         else:
             currentColumns = line
+            print(currentColumns)
         if isRISC:
             currentColumns[2]=6
             currentColumns[4] = currentColumns[4].upper()
@@ -920,18 +680,23 @@ def main(arguments):
             no_ads_information_hostnames.append(hostname)
             continue
         firewall_application_form_by_hostname = make_firewall_application_form_by_hostname(firewall_application_form, hostname_list[hostname])
-        wb = openpyxl.Workbook()
         tempName = os.path.join(resultFolder, '{}_info.xlsx'.format(hostname))
+        wb = ExcelWriter(tempName, sheet_infos, numberic_verified_ip_range, except_ports, except_ip_ranges, common_security_rules)
+        '''
+        wb = openpyxl.Workbook()
+
         create_sheet_info(wb)
+        '''
+        create_ads_sheet(wb, 'All_Inbound', hostname, ads_info_by_hostname[hostname][inboundStr], 0, firewall_application_form_by_hostname)
+
+        create_ads_sheet(wb, 'All_Outbound', hostname, ads_info_by_hostname[hostname][outboundStr], 1, firewall_application_form_by_hostname)
+
 
         if isInFirewall:
             for i, fn in enumerate(firewall_infos[0]):
                 create_ads_sheet(wb, fn+'_FW_Inbound', hostname, ads_info_by_hostname[hostname]['firewall_infos']['inbound'][i], 2, firewall_application_form_by_hostname)
                 create_ads_sheet(wb, fn+'_FW_Outbound', hostname, ads_info_by_hostname[hostname]['firewall_infos']['outbound'][i], 3, firewall_application_form_by_hostname)
-        create_ads_sheet(wb, 'All_Inbound', hostname, ads_info_by_hostname[hostname][inboundStr], 0, firewall_application_form_by_hostname)
-
-        create_ads_sheet(wb, 'All_Outbound', hostname, ads_info_by_hostname[hostname][outboundStr], 1, firewall_application_form_by_hostname)
-
+        '''
         create_related_servers_sheet(wb, verifiedInbound, ads_info_by_hostname[hostname][relatedServersStr][verifiedInbound])
 
         create_related_servers_sheet(wb, verifiedOutbound, ads_info_by_hostname[hostname][relatedServersStr][verifiedOutbound])
@@ -939,9 +704,24 @@ def main(arguments):
         create_related_servers_sheet(wb, 'not_{}'.format(verifiedInbound), ads_info_by_hostname[hostname][relatedServersStr]['not_{}'.format(verifiedInbound)])
 
         create_related_servers_sheet(wb, 'not_{}'.format(verifiedOutbound), ads_info_by_hostname[hostname][relatedServersStr]['not_{}'.format(verifiedOutbound)])
+        '''
+        wb.create_related_servers_sheet(verifiedInbound, ads_info_by_hostname[hostname][relatedServersStr][verifiedInbound], customSeparator)
+
+        wb.create_related_servers_sheet(verifiedOutbound, ads_info_by_hostname[hostname][relatedServersStr][verifiedOutbound], customSeparator)
+
+        wb.create_related_servers_sheet('not_{}'.format(verifiedInbound), ads_info_by_hostname[hostname][relatedServersStr]['not_{}'.format(verifiedInbound)], customSeparator)
+
+        wb.create_related_servers_sheet('not_{}'.format(verifiedOutbound), ads_info_by_hostname[hostname][relatedServersStr]['not_{}'.format(verifiedOutbound)], customSeparator)
+
         if isRISC:
+            '''
             create_risc_sheet(wb, ads_info_by_hostname[hostname]['RISC'])
+            '''
+            wb.create_risc_sheet(ads_info_by_hostname[hostname]['RISC'])
+        '''
         wb.save(tempName)
+        '''
+        wb.save()
 
         print('{}\n'.format(tempName))
         del ads_info_by_hostname[hostname]
@@ -959,10 +739,16 @@ def main(arguments):
     print("* End Excel file generation *")
     print("*******************************")
     print("Total : {}".format(time.time()-start_time))
-
+    print("\n\n\n")
+    get_input("Press Enter...")
 
 
 if __name__ == '__main__':
+    get_input = input
+
+    # If this is Python 2, use raw_input()
+    if sys.version_info[:2] <= (2, 7):
+        get_input = raw_input
     # main(sys.argv[1:])
     main(sys.argv[1:])
     # ADS

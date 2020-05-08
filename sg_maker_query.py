@@ -121,6 +121,7 @@ where
   tcp_flags in (2,6,7)
   and (pkt_dstaddr like '10.248%' or pkt_dstaddr like '10.249%')
   and action like 'A%'
+  and protocol in (6,17)
 group by pkt_srcaddr, pkt_dstaddr, destination_port, protocol
 '''
 
