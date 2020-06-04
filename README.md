@@ -1,5 +1,5 @@
 ### pip
-pip install boto3 botocore retrying openpyxl requests pyyaml pandas
+pip install boto3 botocore retrying xlsxwriter requests pyyaml pandas
 
 ### 실행
 start /high python sg_firewall_maker.py --type RISCALL --source {Source File Path} --machines {Machine List File Path} --sprint {machine sprint}

@@ -48,8 +48,9 @@ def firewall_setter(firewall_infos):
     firewall_names = []
     tmp_list = []
     for info_idx, info in enumerate(firewall_infos):
-        firewall_names.append(info.keys()[0])
-        tmp = info[info.keys()[0]]
+        info_keys=list(info.keys())
+        firewall_names.append(info_keys[0])
+        tmp = info[info_keys[0]]
         for f_idx in range(1,len(tmp.keys())+1):
             for ip_range in tmp[f_idx]:
                 tmp_list.append(make_key_value(ip_num_ip_binary(ip_range.split('/')), (info_idx,f_idx)))
@@ -179,7 +180,7 @@ def check_firewall_application_form(firewall_application_form):
     form_keys = []
     form_values = []
     for form in firewall_application_form:
-        k = form.keys()[0]
+        k = list(form.keys())[0]
         form_keys.append(k)
         v = check_firewall_application_form_value(form[k])
         if v==False:
@@ -217,7 +218,7 @@ def port_treat_as_any(output_list, ref_value_of_treat_as_range):
 def create_common_security_rules(common_security_rules):
     temp_kv = []
     if common_security_rules:
-        for k in common_security_rules.keys():
+        for k in list(common_security_rules.keys()):
             temp_kv.append(make_key_value(ip_num_ip_binary(k.split('/')), CustomTrie.Trie(create_common_security_rule(security_group_config.get('common_security_rules')[k]),'kv')))
     return CustomTrie.Trie(temp_kv, 'kv')
 
@@ -247,7 +248,7 @@ def create_common_security_rule_by_protocol(rules, protocol):
             temp.append(make_key_value(ib, make_common_sg_protocol_dict(0, 65536,'TCP')))
     else:
         for rule in rules:
-            temp_range=rule.keys()
+            temp_range=list(rule.keys())
             if rule:
                 k=temp_range[0]
                 rule_info = rule[k]
