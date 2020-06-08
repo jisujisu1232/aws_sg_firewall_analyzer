@@ -1,5 +1,5 @@
 ### pip
-pip install boto3 botocore retrying xlsxwriter requests pyyaml pandas
+pip install retrying xlsxwriter requests pyyaml pandas
 
 ### 실행
 start /high python sg_firewall_maker.py --type RISCALL --source {Source File Path} --machines {Machine List File Path} --sprint {machine sprint}
@@ -42,6 +42,41 @@ start /high python sg_firewall_maker.py --type RISCALL --source {Source File Pat
             - Expiration_Date : "#add_year# 1"
             - Requester : "" #"#service_admin#"
             - Remarks : "#hostname# by Automation"
+        firewall_infos:
+            - 방화벽 명:
+                1 :
+                    - {Range 1}
+                    - {Range N}
+                2 :
+                    - {Range 1}
+                    - {Range N}
+                ...
+
+                N :
+                    - {Range1}
+                    - {RangeN}
+            #Example
+            # DC 와 AWS 사이에 방화벽이 있을 경우
+            - DC_aws:
+                1 : #aws_range
+                    - 123.123.0.0/16
+                2 : #dc_range
+                    - 127.0.0.0/7
+                    - 123.111.0.0/16
+            # AWS VPC 간 방화벽
+            - aws_int:
+                1 :
+                    - 123.123.1.0/24 #AWS VPC 1
+                2 :
+                    - 123.123.2.0/24 #AWS VPC 2
+                3 :
+                    - 123.123.3.0/24 #AWS VPC 3
+            # AWS -> 외부 방화벽
+            - aws_ext:
+                1 : #aws_range
+                    - 123.123.0.0/16
+                2 : #ext_range
+                    - 0.0.0.0/0
         security_group:
             ip_ranges_treated_equally:
                 AWS SG 를 그릴 때 묶음 단위 IP Ranges

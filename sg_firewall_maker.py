@@ -3,7 +3,7 @@
 #Athor : Jisu Kim
 '''
 python 2.7
-pip install boto3 botocore retrying xlsxwriter requests pyyaml pandas
+pip install retrying xlsxwriter requests pyyaml pandas
 '''
 from __future__ import print_function
 import copy
@@ -750,6 +750,9 @@ if __name__ == '__main__':
     # If this is Python 2, use raw_input()
     if sys.version_info[:2] <= (2, 7):
         get_input = raw_input
+    else:
+        unicode = str
+        long = int
     # main(sys.argv[1:])
     main(sys.argv[1:])
     # ADS
