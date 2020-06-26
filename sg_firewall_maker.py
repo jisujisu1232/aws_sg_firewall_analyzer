@@ -650,7 +650,7 @@ def main(arguments):
             isInDestHostname = destination_hostname and destination_hostname in hostname_list.keys()
             currentColumns[1] = compare_ip_range(target_ip, target_ip_binary, final_aws_ip_ranges, 'AWS IP Range')
             currentColumns.append(source_ip_binary)
-            currentColumns.append(0 if currentColumns[1] == 'AWS IP Range' else target_ip_binary)
+            currentColumns.append('0' if currentColumns[1] == 'AWS IP Range' else target_ip_binary)
             if isInFirewall and currentColumns[1]!='AWS IP Range':
                 compare_firewall_and_add(source_ip_binary, target_ip_binary, ads_info_by_hostname, currentColumns, source_hostname if isInSrcHostname else None, destination_hostname if isInDestHostname else None)
 
